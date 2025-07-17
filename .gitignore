@@ -1,0 +1,20 @@
+# Thư mục data và các thư mục con
+data/
+data/raw/
+data/models/
+data/stats/
+
+# Thư mục môi trường ảo
+venv/
+
+# Thư mục build và node_modules của React
+web/dist/
+web/node_modules/
+
+# File cấu hình của PyCharm
+.idea/
+
+# Các file tạm khác
+*.pyc
+__pycache__/
+*.log

@@ -1,0 +1,33 @@
+# Cấu hình dữ liệu
+data:
+  sudoku_3m_path: "/content/sudoku_3m.csv"
+  model_save_path: "/content/models/"
+  stats_save_path: "/content/stats/"
+
+# Cấu hình solver
+solver:
+  grid_size: 9
+  difficulty_levels:
+    easy: { min_clues: 30, max_clues: 81 }
+    medium: { min_clues: 25, max_clues: 29 }
+    hard: { min_clues: 17, max_clues: 24 }
+
+# Cấu hình mô hình học máy (Random Forest)
+model:
+  n_estimators: 100
+  max_depth: 15
+  min_samples_split: 2
+  random_state: 42
+
+# Cấu hình giao diện web
+ui:
+  port: 8000
+  colors:
+    background: "#f0f4f8"
+    grid_lines: "#333333"
+    highlighted_cell: "#bbdefb"
+    text: "#000000"
+    button_bg: "#4caf50"
+    button_active: "#45a049"
+    loading_bg: "#e0e0e0"
+    loading_text: "#333333"
