@@ -42,6 +42,7 @@ class RandomForestSolver(BaseSolver):
     def solve(self, puzzle: List[List[int]], solution: Optional[List[List[int]]]=None) -> List[List[int]]:
         """
         Giải Sudoku bằng mô hình Random Forest Classifier.
+        Không yêu cầu điền hết bảng, chỉ điền các ô có độ tin cậy cao.
 
         Args:
             puzzle (List[List[int]]): Lưới 9x9 của bài toán Sudoku (0 cho ô trống).
@@ -60,30 +61,48 @@ class RandomForestSolver(BaseSolver):
                 logger.error("Lưới đầu vào không hợp lệ")
                 raise ValueError("Lưới đầu vào không hợp lệ")
 
-            grid = [row[:] for row in puzzle]
-            for row in range(9):
-                for col in range(9):
-                    if grid[row][col] == 0:
-                        input_data = preprocess_puzzle(grid, for_ml=True)
-                        input_data = input_data.reshape(1, -1)
-                        start_time = time.time()
-                        pred = self.model.predict(input_data)
-                        self.inference_time += time.time() - start_time
-                        pred_value = int(np.clip(pred[0], 1, 9))
-                        if is_valid_move(grid, row, col, pred_value):
-                            grid[row][col] = pred_value
+            grid = np.array(puzzle, dtype=np.int32)
+            empty_cells = np.where(grid == 0)
+            if not empty_cells[0].size:
+                logger.info("Không có ô trống để dự đoán")
+                return grid.tolist()
+
+            # Tiền xử lý hàng loạt
+            input_data = []
+            cell_indices = []
+            for row, col in zip(empty_cells[0], empty_cells[1]):
+                input_data.append(preprocess_puzzle(grid.tolist(), for_ml=True))
+                cell_indices.append((row, col))
+            input_data = np.array(input_data, dtype=np.int32)
+
+            # Dự đoán hàng loạt
+            start_time = time.time()
+            if input_data.size:
+                pred_probs = self.model.predict_proba(input_data)
+                predictions = np.argmax(pred_probs, axis=1) + 1  # Giá trị từ 1-9
+                confidences = np.max(pred_probs, axis=1)
+            else:
+                predictions = []
+                confidences = []
+            self.inference_time += time.time() - start_time
+
+            # Điền các ô có độ tin cậy cao
+            confidence_threshold = 0.6  # Ngưỡng độ tin cậy
+            for (row, col), pred, conf in zip(cell_indices, predictions, confidences):
+                if conf >= confidence_threshold and is_valid_move(grid.tolist(), row, col, pred):
+                    grid[row, col] = pred
 
             # Tính độ chính xác nếu có solution
-            if solution:
-                correct = sum(1 for i in range(9) for j in range(9)
-                            if grid[i][j] != 0 and grid[i][j] == solution[i][j])
-                total_filled = sum(1 for i in range(9) for j in range(9) if grid[i][j] != 0)
+            if solution is not None:
+                solution = np.array(solution, dtype=np.int32)
+                correct = np.sum((grid != 0) & (grid == solution))
+                total_filled = np.sum(grid != 0)
                 self.accuracy = correct / total_filled if total_filled > 0 else 0.0
-                logger.info(f"Độ chính xác: {self.accuracy*100:.2f}%")
+                logger.info(f"Độ chính xác: {self.accuracy * 100:.2f}%")
 
-            self.empty_cell_count = sum(row.count(0) for row in grid)
+            self.empty_cell_count = np.sum(grid == 0)
             logger.info("Hoàn tất giải bài toán")
-            return grid
+            return grid.tolist()
         except Exception as e:
             logger.error(f"Lỗi khi giải bài toán: {str(e)}")
             return puzzle

@@ -10,7 +10,6 @@ import pandas as pd
 # Cấu hình logger
 logger = logging.getLogger("sudoku_ai.prob_logic_solver")
 
-
 class ProbabilisticLogicSolver(BaseSolver):
     """
     Solver kết hợp thống kê xác suất từ dữ liệu huấn luyện với lan truyền ràng buộc để giải Sudoku.
@@ -42,11 +41,12 @@ class ProbabilisticLogicSolver(BaseSolver):
             Dict[Tuple[int, int], List[float]]: Xác suất của từng số (1-9) cho mỗi ô.
         """
         logger.info("Xây dựng bảng xác suất từ dữ liệu huấn luyện")
-        prob_table = {(row, col): [0.0] * 9 for row in range(9) for col in range(9)}
+        prob_table = {(row, col): np.zeros(9, dtype=np.float32) for row in range(9) for col in range(9)}
         total_solutions = len(solutions)
 
+        # Tối ưu hóa bằng vector hóa
         for _, row in solutions.iterrows():
-            grid = [list(map(int, row['solution'][i * 9:(i + 1) * 9])) for i in range(9)]
+            grid = np.array([list(map(int, row['solution'][i * 9:(i + 1) * 9])) for i in range(9)])
             for r in range(9):
                 for c in range(9):
                     num = grid[r][c]
@@ -54,17 +54,15 @@ class ProbabilisticLogicSolver(BaseSolver):
 
         # Chuẩn hóa xác suất
         for pos in prob_table:
-            total = sum(prob_table[pos])
-            if total > 0:
-                prob_table[pos] = [count / total for count in prob_table[pos]]
-            else:
-                prob_table[pos] = [1.0 / 9] * 9
+            total = prob_table[pos].sum()
+            prob_table[pos] = prob_table[pos] / total if total > 0 else np.full(9, 1.0 / 9, dtype=np.float32)
         logger.info("Bảng xác suất được xây dựng thành công")
         return prob_table
 
     def solve(self, puzzle: List[List[int]], solution: Optional[List[List[int]]] = None) -> List[List[int]]:
         """
         Giải Sudoku bằng logic xác suất kết hợp lan truyền ràng buộc.
+        Không yêu cầu điền hết bảng, cho phép điền thiếu và sai.
 
         Args:
             puzzle (List[List[int]]): Lưới 9x9 của bài toán Sudoku (0 cho ô trống).
@@ -82,51 +80,61 @@ class ProbabilisticLogicSolver(BaseSolver):
             self.iterations = 0
             self.conflicts = 0
             self.invalid_attempts = 0
-            grid = [row[:] for row in puzzle]
+            grid = np.array(puzzle, dtype=np.int32)
             candidates = self._initialize_candidates(grid)
-            self._solve_probabilistic(grid, candidates)
+
+            # Tiếp tục giải cho đến khi không còn ô nào có xác suất cao
+            while self._solve_probabilistic(grid, candidates):
+                self.iterations += 1
+                if self.iterations > 1000:  # Giới hạn số vòng lặp để tránh treo
+                    logger.info("Đạt giới hạn vòng lặp, dừng giải")
+                    break
 
             # Tính độ chính xác nếu có solution
-            if solution:
-                correct = sum(1 for i in range(9) for j in range(9)
-                              if grid[i][j] != 0 and grid[i][j] == solution[i][j])
-                total_filled = sum(1 for i in range(9) for j in range(9) if grid[i][j] != 0)
+            if solution is not None:
+                solution = np.array(solution, dtype=np.int32)
+                correct = np.sum((grid != 0) & (grid == solution))
+                total_filled = np.sum(grid != 0)
                 self.accuracy = correct / total_filled if total_filled > 0 else 0.0
                 logger.info(f"Độ chính xác: {self.accuracy * 100:.2f}%")
 
             logger.info("Hoàn tất giải bài toán")
-            return grid
+            return grid.tolist()
         except Exception as e:
             logger.error(f"Lỗi khi giải bài toán: {str(e)}")
             return puzzle
 
-    def _initialize_candidates(self, grid: List[List[int]]) -> List[List[List[int]]]:
+    def _initialize_candidates(self, grid: np.ndarray) -> np.ndarray:
         """
-        Khởi tạo danh sách ứng viên cho mỗi ô.
+        Khởi tạo danh sách ứng viên cho mỗi ô bằng numpy.
 
         Args:
-            grid (List[List[int]]): Lưới 9x9.
+            grid (np.ndarray): Lưới 9x9.
 
         Returns:
-            List[List[List[int]]]: Danh sách ứng viên cho mỗi ô.
+            np.ndarray: Mảng ứng viên (9x9x10, với 0 không được dùng).
         """
-        candidates = [[[0] for _ in range(9)] for _ in range(9)]
+        candidates = np.ones((9, 9, 10), dtype=np.bool_)
+        candidates[:, :, 0] = False  # Không sử dụng số 0
         for row in range(9):
             for col in range(9):
-                if grid[row][col] == 0:
-                    candidates[row][col] = [num for num in range(1, 10) if is_valid_move(grid, row, col, num)]
+                if grid[row, col] != 0:
+                    candidates[row, col, :] = False
+                    candidates[row, col, grid[row, col]] = True
                 else:
-                    candidates[row][col] = [grid[row][col]]
+                    for num in range(1, 10):
+                        if not is_valid_move(grid.tolist(), row, col, num):
+                            candidates[row, col, num] = False
         return candidates
 
-    def _propagate_constraints(self, grid: List[List[int]], candidates: List[List[List[int]]], row: int, col: int,
+    def _propagate_constraints(self, grid: np.ndarray, candidates: np.ndarray, row: int, col: int,
                                num: int) -> bool:
         """
         Lan truyền ràng buộc sau khi đặt một số.
 
         Args:
-            grid (List[List[int]]): Lưới 9x9.
-            candidates (List[List[List[int]]]): Danh sách ứng viên.
+            grid (np.ndarray): Lưới 9x9.
+            candidates (np.ndarray): Mảng ứng viên.
             row (int): Chỉ số hàng.
             col (int): Chỉ số cột.
             num (int): Số được đặt.
@@ -134,89 +142,90 @@ class ProbabilisticLogicSolver(BaseSolver):
         Returns:
             bool: True nếu lan truyền thành công, False nếu có xung đột.
         """
-        grid[row][col] = num
-        candidates[row][col] = [num]
-        for j in range(9):
-            if j != col and num in candidates[row][j]:
-                candidates[row][j].remove(num)
-                if not candidates[row][j]:
-                    self.conflicts += 1
-                    return False
-        for i in range(9):
-            if i != row and num in candidates[i][col]:
-                candidates[i][col].remove(num)
-                if not candidates[i][col]:
-                    self.conflicts += 1
-                    return False
+        if not is_valid_move(grid.tolist(), row, col, num):
+            self.invalid_attempts += 1
+            return False
+
+        grid[row, col] = num
+        candidates[row, col, :] = False
+        candidates[row, col, num] = True
+
+        # Cập nhật hàng
+        candidates[row, :, num] = False
+        if np.any(candidates[row, :, 1:].sum(axis=1) == 0):
+            self.conflicts += 1
+            return False
+
+        # Cập nhật cột
+        candidates[:, col, num] = False
+        if np.any(candidates[:, col, 1:].sum(axis=1) == 0):
+            self.conflicts += 1
+            return False
+
+        # Cập nhật ô 3x3
         start_row, start_col = 3 * (row // 3), 3 * (col // 3)
-        for i in range(start_row, start_row + 3):
-            for j in range(start_col, start_col + 3):
-                if (i != row or j != col) and num in candidates[i][j]:
-                    candidates[i][j].remove(num)
-                    if not candidates[i][j]:
-                        self.conflicts += 1
-                        return False
+        candidates[start_row:start_row + 3, start_col:start_col + 3, num] = False
+        if np.any(candidates[start_row:start_row + 3, start_col:start_col + 3, 1:].sum(axis=2).ravel() == 0):
+            self.conflicts += 1
+            return False
+
         return True
 
-    def _get_best_cell(self, candidates: List[List[List[int]]], grid: List[List[int]]) -> Optional[
-        Tuple[int, int, List[Tuple[int, float]]]]:
+    def _get_best_cell(self, candidates: np.ndarray, grid: np.ndarray) -> Optional[Tuple[int, int, List[Tuple[int, float]]]]:
         """
         Tìm ô có xác suất cao nhất cho số tiếp theo.
 
         Args:
-            candidates (List[List[List[int]]]): Danh sách ứng viên.
-            grid (List[List[int]]): Lưới hiện tại.
+            candidates (np.ndarray): Mảng ứng viên.
+            grid (np.ndarray): Lưới hiện tại.
 
         Returns:
             Optional[Tuple[int, int, List[Tuple[int, float]]]]: (row, col, [(num, prob), ...]) hoặc None.
         """
-        min_candidates = float('inf')
-        best_cell = None
-        best_probs = None
-
-        for row in range(9):
-            for col in range(9):
-                if grid[row][col] == 0 and len(candidates[row][col]) > 0:
-                    num_candidates = len(candidates[row][col])
-                    if num_candidates < min_candidates:
-                        min_candidates = num_candidates
-                        best_cell = (row, col)
-                        probs = []
-                        for num in candidates[row][col]:
-                            row_count = sum(1 for j in range(9) if num in candidates[row][j])
-                            col_count = sum(1 for i in range(9) if num in candidates[i][col])
-                            subgrid_count = sum(1 for i in range(3 * (row // 3), 3 * (row // 3) + 3)
-                                                for j in range(3 * (col // 3), 3 * (col // 3) + 3)
-                                                if num in candidates[i][j])
-                            constraint_prob = 1.0 / max(1, row_count + col_count + subgrid_count)
-                            precomputed_prob = self.probability_table.get((row, col), [1.0 / 9] * 9)[num - 1]
-                            prob = 0.7 * constraint_prob + 0.3 * precomputed_prob
-                            probs.append((num, prob))
-                        total_prob = sum(p for _, p in probs)
-                        if total_prob > 0:
-                            probs = [(num, p / total_prob) for num, p in probs]
-                        best_probs = sorted(probs, key=lambda x: x[1], reverse=True)
-                    if min_candidates == 0:
-                        self.invalid_attempts += 1
-                        return None
-
-        if best_cell is None:
-            logger.debug("Không tìm thấy ô hợp lệ để gán")
+        empty_cells = np.where((grid == 0) & (candidates[:, :, 1:].sum(axis=2) > 0))
+        if not empty_cells[0].size:
             return None
-        return best_cell[0], best_cell[1], best_probs
 
-    def _solve_probabilistic(self, grid: List[List[int]], candidates: List[List[List[int]]]) -> bool:
+        # Tìm ô có ít ứng viên nhất
+        candidate_counts = candidates[empty_cells[0], empty_cells[1], 1:].sum(axis=1)
+        min_candidates = candidate_counts.min()
+        if min_candidates == 0:
+            self.invalid_attempts += 1
+            return None
+
+        min_indices = np.where(candidate_counts == min_candidates)[0]
+        row, col = empty_cells[0][min_indices[0]], empty_cells[1][min_indices[0]]
+
+        # Tính xác suất
+        probs = []
+        for num in range(1, 10):
+            if candidates[row, col, num]:
+                row_count = candidates[row, :, num].sum()
+                col_count = candidates[:, col, num].sum()
+                subgrid_count = candidates[3 * (row // 3):3 * (row // 3) + 3,
+                                          3 * (col // 3):3 * (col // 3) + 3, num].sum()
+                constraint_prob = 1.0 / max(1, row_count + col_count + subgrid_count)
+                precomputed_prob = self.probability_table.get((row, col), np.full(9, 1.0 / 9))[num - 1]
+                prob = 0.7 * constraint_prob + 0.3 * precomputed_prob
+                probs.append((num, prob))
+
+        total_prob = sum(p for _, p in probs)
+        if total_prob > 0:
+            probs = [(num, p / total_prob) for num, p in probs]
+        probs.sort(key=lambda x: x[1], reverse=True)
+        return row, col, probs
+
+    def _solve_probabilistic(self, grid: np.ndarray, candidates: np.ndarray) -> bool:
         """
         Giải bài toán bằng logic xác suất với lan truyền ràng buộc.
 
         Args:
-            grid (List[List[int]]): Lưới 9x9 cần giải.
-            candidates (List[List[List[int]]]): Danh sách ứng viên.
+            grid (np.ndarray): Lưới 9x9 cần giải.
+            candidates (np.ndarray): Mảng ứng viên.
 
         Returns:
             bool: True nếu có thay đổi, False nếu không.
         """
-        self.iterations += 1
         cell = self._get_best_cell(candidates, grid)
         if not cell:
             return False
@@ -232,8 +241,7 @@ class ProbabilisticLogicSolver(BaseSolver):
         threshold = 0.3
         if prob >= threshold:
             logger.debug(f"Gán {num} vào ({row}, {col}) với xác suất {prob:.3f}")
-            if self._propagate_constraints(grid, candidates, row, col, num):
-                return True
+            return self._propagate_constraints(grid, candidates, row, col, num)
         return False
 
     def collect_stats(self, stats_collector: StatsCollector, puzzle: List[List[int]],
