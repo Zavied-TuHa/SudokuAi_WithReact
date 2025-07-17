@@ -3,6 +3,7 @@ data:
   sudoku_3m_path: "/content/sudoku_3m.csv"
   model_save_path: "/content/models/"
   stats_save_path: "/content/stats/"
+  max_train_samples: 10000
 
 # Cấu hình solver
 solver:

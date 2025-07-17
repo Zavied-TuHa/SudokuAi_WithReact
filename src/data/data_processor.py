@@ -50,6 +50,14 @@ def clean_data(file_path: str, config: dict) -> Tuple[pd.DataFrame, pd.DataFrame
             logger.error("Không còn dữ liệu hợp lệ sau khi làm sạch")
             raise ValueError("Không còn dữ liệu hợp lệ sau khi làm sạch")
 
+        # Lấy mẫu dữ liệu nếu max_train_samples được chỉ định
+        max_train_samples = config["data"].get("max_train_samples", 0)
+        if max_train_samples > 0:
+            # Tính số lượng mẫu kiểm tra để đảm bảo tỷ lệ 9:1
+            total_samples = min(max_train_samples * 10 // 9, len(df))
+            df = df.sample(n=total_samples, random_state=42)
+            logger.info(f"Lấy mẫu {total_samples} hàng từ bộ dữ liệu")
+
         # Chuẩn hóa puzzle (thay '0' bằng '.')
         df['puzzle'] = df['puzzle'].str.replace('0', '.', regex=False)
 
