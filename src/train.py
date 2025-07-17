@@ -16,12 +16,13 @@ from src.solvers.random_forest_solver import RandomForestSolver
 from src.utils.sudoku_utils import is_valid_grid
 import psutil
 import joblib
+import pickle
 import pandas as pd
 
 # Cấu hình logger
 logger = logging.getLogger("sudoku_ai.train")
 
-def check_solution_validity(solver, puzzle: list, solution: list, stats_collector: StatsCollector) -> bool:
+def check_solution_validity(solver, puzzle: list, solution: list, stats_collector: StatsCollector, allow_empty: bool = True) -> bool:
     """
     Kiểm tra tính hợp lệ của lời giải từ solver.
 
@@ -30,13 +31,14 @@ def check_solution_validity(solver, puzzle: list, solution: list, stats_collecto
         puzzle (List[List[int]]): Lưới bài toán.
         solution (List[List[int]]): Lời giải mong đợi.
         stats_collector (StatsCollector): Đối tượng thu thập thống kê.
+        allow_empty (bool): Cho phép ô trống nếu True.
 
     Returns:
         bool: True nếu lời giải hợp lệ, False nếu không.
     """
     try:
         result = solver.solve(puzzle, solution)
-        if not is_valid_grid(result, allow_empty=True):
+        if not is_valid_grid(result, allow_empty=allow_empty):
             logger.warning("Lời giải không hợp lệ")
             stats_collector.add_stat("invalid_solution", 1)
             return False
@@ -75,17 +77,21 @@ def train_random_forest(train_data: pd.DataFrame, test_data: pd.DataFrame, confi
     train_data = pd.DataFrame(valid_rows)
     logger.info(f"Dữ liệu huấn luyện sau khi làm sạch: {len(train_data)} mẫu")
 
-    # Sử dụng toàn bộ dữ liệu huấn luyện
-    batch_size = 10000
+    # Chuẩn bị dữ liệu huấn luyện
+    batch_size = 5000  # Giảm batch size để tối ưu bộ nhớ
     X_train = []
     y_train = []
     for i in tqdm(range(0, len(train_data), batch_size), desc="Chuẩn bị dữ liệu huấn luyện"):
         batch = train_data[i:i + batch_size]
-        X_train.extend([preprocess_puzzle(row["puzzle"], for_ml=True) for _, row in batch.iterrows()])
-        y_train.extend([preprocess_puzzle(row["solution"], for_ml=True) for _, row in batch.iterrows()])
+        for _, row in batch.iterrows():
+            puzzle = preprocess_puzzle(row["puzzle"], for_ml=True)
+            solution = preprocess_puzzle(row["solution"], for_ml=False)
+            X_train.append(puzzle)
+            y_train.append(solution[0])  # Dự đoán giá trị ô đầu tiên
     X_train = np.array(X_train, dtype=np.int32)
     y_train = np.array(y_train, dtype=np.int32)
 
+    # Huấn luyện mô hình
     model = RandomForestClassifier(
         n_estimators=config["model"]["n_estimators"],
         max_depth=config["model"]["max_depth"],
@@ -111,7 +117,7 @@ def train_random_forest(train_data: pd.DataFrame, test_data: pd.DataFrame, confi
     for _, row in tqdm(test_data.iterrows(), total=total_puzzles, desc="Đánh giá Random Forest"):
         puzzle = string_to_grid(row["puzzle"])
         solution = string_to_grid(row["solution"])
-        if check_solution_validity(solver, puzzle, solution, stats_collector):
+        if check_solution_validity(solver, puzzle, solution, stats_collector, allow_empty=True):
             valid_solutions += 1
 
     metrics = compute_metrics(solver, [string_to_grid(row["puzzle"]) for _, row in test_data.iterrows()],
@@ -132,6 +138,13 @@ def test_prob_logic(test_data: pd.DataFrame, train_data: pd.DataFrame, stats_col
     """
     logger.info("Xây dựng bảng xác suất cho ProbabilisticLogicSolver")
     prob_table = ProbabilisticLogicSolver.build_probability_table(train_data)
+    # Lưu bảng xác suất
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    prob_table_path = os.path.join("content/models", f"prob_table_{timestamp}.pkl")
+    with open(prob_table_path, 'wb') as f:
+        pickle.dump(prob_table, f)
+    logger.info(f"Bảng xác suất được lưu tại {prob_table_path}")
+
     logger.info("Đánh giá ProbabilisticLogicSolver")
     solver = ProbabilisticLogicSolver(probability_table=prob_table)
     valid_solutions = 0
@@ -140,7 +153,7 @@ def test_prob_logic(test_data: pd.DataFrame, train_data: pd.DataFrame, stats_col
     for _, row in tqdm(test_data.iterrows(), total=total_puzzles, desc="Đánh giá Prob-Logic"):
         puzzle = string_to_grid(row["puzzle"])
         solution = string_to_grid(row["solution"])
-        if check_solution_validity(solver, puzzle, solution, stats_collector):
+        if check_solution_validity(solver, puzzle, solution, stats_collector, allow_empty=True):
             valid_solutions += 1
 
     metrics = compute_metrics(solver, [string_to_grid(row["puzzle"]) for _, row in test_data.iterrows()],

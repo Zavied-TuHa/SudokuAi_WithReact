@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import logging
+import pickle
 import time
 import os
 import numpy as np
@@ -54,9 +55,21 @@ async def solve_puzzle_api(request: SolvePuzzleRequest):
             logger.error("Bài toán Sudoku không hợp lệ")
             raise HTTPException(status_code=400, detail="Bài toán Sudoku không hợp lệ")
 
+        # Tải bảng xác suất cho ProbabilisticLogicSolver
+        prob_table = None
+        if request.algorithm == "prob-logic":
+            prob_table_path = os.path.join(config["data"]["model_save_path"], "prob_table.pkl")
+            try:
+                with open(prob_table_path, 'rb') as f:
+                    prob_table = pickle.load(f)
+                logger.info(f"Đã tải bảng xác suất từ {prob_table_path}")
+            except FileNotFoundError:
+                logger.warning(f"Không tìm thấy bảng xác suất tại {prob_table_path}. Sử dụng bảng mặc định.")
+                prob_table = None
+
         solver_map = {
             "rule-based": RuleBasedSolver(),
-            "prob-logic": ProbabilisticLogicSolver(),
+            "prob-logic": ProbabilisticLogicSolver(probability_table=prob_table),
             "random-forest": RandomForestSolver(os.path.join(config["data"]["model_save_path"], "random_forest_model.pkl"))
         }
         solver = solver_map.get(request.algorithm)
@@ -69,8 +82,9 @@ async def solve_puzzle_api(request: SolvePuzzleRequest):
         solve_time = time.time() - start_time
 
         message = "Giải bài toán thành công!"
+        allow_empty = request.algorithm != "rule-based"
         is_complete = not any(0 in row for row in result)
-        is_valid = is_valid_grid(result, allow_empty=(request.algorithm != "rule-based"))
+        is_valid = is_valid_grid(result, allow_empty=allow_empty)
         if request.algorithm == "rule-based" and (not is_complete or not is_valid):
             message = "Không thể giải bài toán hoàn chỉnh!"
 
